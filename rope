@@ -53,7 +53,7 @@ Group options:
   group create <group>                             Creates a server group
   group delete <group>                             Deletes a group from the group list. All servers in the group
                                                    are still retained.
-  group <group> add <nick1> [nick2 [nick3...]]     Adds a set of servers to the given group. 
+  group <group> add <nick1> [nick2 [nick3...]]     Adds a set of servers to the given group.
   group <group> remove <nick1> [nick2 [nick3...]]  Removes a set of servers from the given group
 
 __HELP__
@@ -61,6 +61,12 @@ __HELP__
 			dispatch) cat <<__HELP__
 Dispatch options:
   dispatch <server|group> <nick> <command>    Dispatches <command> to the server(s) specified by <nick>
+
+__HELP__
+			          ;;
+			status)   cat <<__HELP__
+Status options:
+  status <server|group> <nick>  Checks whether the server(s) specified by <nick> are up and listening to ssh
 
 __HELP__
 			          ;;
@@ -84,6 +90,7 @@ Console Commands:
   server    Modifies or queries the server database
   group     Modifies or queries the group database
   dispatch  Dispatches commands to a server or group of servers
+  status    Checks if servers are up and responding
 
 Hint: use help [command] to find more information about a command
 
@@ -126,7 +133,7 @@ groupdbmod() {
 		      # or '/' characters will exist in the nick see validnick()
 		add)  __GROUPDB="$(grep "^$1:" <<< "$__GROUPDB")$2:"$'\n'"$(grep -v "^$1:" <<< "$__GROUPDB")"
 		      __GROUPDB="$(grep -v '^$' <<< "$__GROUPDB")" ;;
-		rem)  __GROUPDB="$(sed "s/:$2:/:/" <<< "$(grep "^$1:" <<< "$__GROUPDB")")"$'\n'"$(grep -v "^$1:" <<< "$__GROUPDB")" ;; 
+		rem)  __GROUPDB="$(sed "s/:$2:/:/" <<< "$(grep "^$1:" <<< "$__GROUPDB")")"$'\n'"$(grep -v "^$1:" <<< "$__GROUPDB")" ;;
 
 
 		      # Checks if a group exists or not
@@ -348,7 +355,7 @@ runop() {
 
 	# Get server
 	server="$(grep "^$nick:" <<< "$__SERVERDB" | cut -f2- -d:)"
-	
+
 	sshhost="$(cut -f1 -d':' <<< "$server")"
 	sshport="$(cut -f2 -d':' <<< "$server:")"
 
@@ -363,10 +370,34 @@ runop() {
 	fi
 }
 
+checkstatus() {
+	nick="$1"
+	shift
+
+	# Get server
+	server="$(grep "^$nick:" <<< "$__SERVERDB" | cut -f2- -d: | cut -f2 -d@)"
+
+	sshhost="$(cut -f1 -d':' <<< "$server")"
+	sshport="$(cut -f2 -d':' <<< "$server:")"
+
+	if [ -z "$sshport" ]; then
+		sshport=22
+	fi
+
+	echo -en "       Checking host '$server'\r";
+
+	if nc -vzw1 "$sshhost" "$sshport" &>/dev/null; then
+		echo -e "\033[32m[ OK ]\033[0m"
+	else
+		echo -e "\033[31m[FAIL]\033[0m"
+	fi
+}
+
 dispatchop() {
-	ntype="$1"
-	nick="$2"
-	shift 2
+	method="$1"
+	ntype="$2"
+	nick="$3"
+	shift 3
 
 	if [ "$ntype" == "group" ]; then
 		if groupdbmod exst "$nick"; then
@@ -380,17 +411,25 @@ dispatchop() {
 			for server in $servers; do
 				IFS="$__oldifs"
 
-				runop "$server" "$@"
+				if [ "$method" = "dispatch" ]; then
+					runop "$server" "$@"
+				elif [ "$method" = "status" ]; then
+					checkstatus "$server"
+				fi
 
 				__oldifs="$IFS"
 				IFS=":"
 			done
-			
+
 			IFS="$__oldifs"
 		fi
 	elif [ "$ntype" == "server" ]; then
 		if serverdbmod exst "$nick"; then
-			runop "$nick" "$@"
+			if [ "$method" = "dispatch" ]; then
+				runop "$nick" "$@"
+			elif [ "$method" = "status" ]; then
+				checkstatus "$nick"
+			fi
 		fi
 	else
 		echo "Unrecognized type '$ntype'. Expecting 'group' or 'server'." >&2
@@ -404,7 +443,8 @@ do_command() {
 		help)     help "$*" ;;
 		server)   serverop "$@" ;;
 		group)    groupop "$@" ;;
-		dispatch) dispatchop "$@" ;;
+		dispatch) dispatchop dispatch "$@" ;;
+		status)   dispatchop status "$@" ;;
 	esac
 }
 
