@@ -22,22 +22,22 @@ __GROUPDB=""
 help(){
 	if [ ! -z "$1" ]; then
 		case "$1" in
-			help)     cat << __HELP__
+			help)      cat << __HELP__
 Help options:
   help             Displays the command list and command line arguments
   help <command>   Displays more information about <command>
 
 __HELP__
-			          ;;
-			exit)     cat << __HELP__
+			           ;;
+			exit)      cat << __HELP__
 Exit options:
   exit    Quits the command line interface
 
 Hint: Ctrl+D will also exit the CLI interface
 
 __HELP__
-			          ;;
-			server)   cat << __HELP__
+			           ;;
+			server)    cat << __HELP__
 Server options:
   server list                             Gets a list of defined servers
   server add <[user@]host[:port]> [nick]  Adds a server with nickname [nick] to the server databse.
@@ -46,8 +46,8 @@ Server options:
   server delete <nick>                    Deletes a server from the server database.
 
 __HELP__
-			          ;;
-			group)    cat << __HELP__
+			           ;;
+			group)     cat << __HELP__
 Group options:
   group list                                       Gets a list of defined groups
   group create <group>                             Creates a server group
@@ -57,14 +57,20 @@ Group options:
   group <group> remove <nick1> [nick2 [nick3...]]  Removes a set of servers from the given group
 
 __HELP__
-			          ;;
-			dispatch) cat <<__HELP__
+			           ;;
+			dispatch)  cat <<__HELP__
 Dispatch options:
   dispatch <server|group> <nick> <command>    Dispatches <command> to the server(s) specified by <nick>
 
 __HELP__
-			          ;;
-			status)   cat <<__HELP__
+			           ;;
+			sendfile)  cat <<__HELP__
+Sendfile options:
+  sendfile <file> <server|group> <nick> <path>    Sends <file> to the server(s) specified by <nick> at the location <path>
+
+__HELP__
+			           ;;
+			status)    cat <<__HELP__
 Status options:
   status <server|group> <nick>  Checks whether the server(s) specified by <nick> are up and listening to ssh
 
@@ -85,12 +91,13 @@ Command line options:
    -h        Show this help message
 
 Console Commands:
-  exit      Exits the console
-  help      Shows the help message for [command]
-  server    Modifies or queries the server database
-  group     Modifies or queries the group database
-  dispatch  Dispatches commands to a server or group of servers
-  status    Checks if servers are up and responding
+  exit       Exits the console
+  help       Shows the help message for [command]
+  server     Modifies or queries the server database
+  group      Modifies or queries the group database
+  dispatch   Dispatches commands to a server or group of servers
+  sendfile   Sends a file to a client or group of clients
+  status     Checks if servers are up and responding
 
 Hint: use help [command] to find more information about a command
 
@@ -384,17 +391,50 @@ checkstatus() {
 		sshport=22
 	fi
 
-	echo -en "       Checking host '$server'\r";
+	str=""
 
 	if nc -vzw1 "$sshhost" "$sshport" &>/dev/null; then
-		echo -e "\033[32m[ OK ]\033[0m"
+		str="$(echo -en "\033[32m[ OK ]\033[0m")"
 	else
-		echo -e "\033[31m[FAIL]\033[0m"
+		str="$(echo -en "\033[31m[FAIL]\033[0m")"
 	fi
+
+	echo "$str Host '$server'";
+}
+
+sendfile() {
+	file="$1"
+	nick="$2"
+	remote="$3"
+
+	# Get server
+	server="$(grep "^$nick:" <<< "$__SERVERDB" | cut -f2- -d:)"
+
+	sshhost="$(cut -f1 -d':' <<< "$server")"
+	sshport="$(cut -f2 -d':' <<< "$server:")"
+
+	if [ -z "$sshport" ]; then
+		sshport=22
+	fi
+
+	sshcmd="ssh -p '$sshport'"
+
+	if [ ! -z "$SSH_KEY_LOCATION" ]; then
+		sshcmd="$sshcmd -i '$SSH_KEY_LOCATION'"
+	fi
+
+	rsync -rzvP -e "$sshcmd" "$file" "$sshhost:$remote"
 }
 
 dispatchop() {
 	method="$1"
+
+	file=""
+	if [ "$method" = "sendfile" ]; then
+		file="$2"
+		shift
+	fi
+
 	ntype="$2"
 	nick="$3"
 	shift 3
@@ -413,13 +453,19 @@ dispatchop() {
 
 				if [ "$method" = "dispatch" ]; then
 					runop "$server" "$@"
+				elif [ "$method" = "sendfile" ]; then
+					sendfile "$file" "$server" "$1"
 				elif [ "$method" = "status" ]; then
-					checkstatus "$server"
+					checkstatus "$server" &
 				fi
 
 				__oldifs="$IFS"
 				IFS=":"
 			done
+
+			if [ "$method" = "status" ]; then
+				wait
+			fi
 
 			IFS="$__oldifs"
 		fi
@@ -427,6 +473,8 @@ dispatchop() {
 		if serverdbmod exst "$nick"; then
 			if [ "$method" = "dispatch" ]; then
 				runop "$nick" "$@"
+			elif [ "$method" = "sendfile" ]; then
+				sendfile "$file" "$nick" "$1"
 			elif [ "$method" = "status" ]; then
 				checkstatus "$nick"
 			fi
@@ -444,6 +492,7 @@ do_command() {
 		server)   serverop "$@" ;;
 		group)    groupop "$@" ;;
 		dispatch) dispatchop dispatch "$@" ;;
+		sendfile) dispatchop sendfile "$@" ;;
 		status)   dispatchop status "$@" ;;
 	esac
 }
@@ -545,27 +594,35 @@ if [ $MEMORY_MODE -eq 0 ]; then
 	fi
 fi
 
-# Kill current running command, but keep script running
-trap : INT
+if [ "$1" = "--" ]; then
+	shift
+fi
 
-#####################
-##  READ COMMANDS  ##
-#####################
-#
-# Proper readline support FTW
-#
-while true; do
-	read -ep "> " cmd
+if [ ! -z "$*" ]; then
+	do_command "$@"
+else
+	# Kill current running command, but keep script running
+	trap : INT
 
-	# Check to see if the user wanted to exit.
-	if [ $? -ne 0 ] || [ "$cmd" = "exit" ]; then
-		printf "\r"
-		break
-	fi
+	#####################
+	##  READ COMMANDS  ##
+	#####################
+	#
+	# Proper readline support FTW
+	#
+	while true; do
+		read -ep "> " cmd
 
-	history -s "$cmd"
-	do_command $cmd
-done
+		# Check to see if the user wanted to exit.
+		if [ $? -ne 0 ] || [ "$cmd" = "exit" ]; then
+			printf "\r"
+			break
+		fi
+
+		history -s "$cmd"
+		do_command $cmd
+	done
+fi
 
 if [ ! -z "$GROUP_DB_FILE" ]; then
 	tee "$GROUP_DB_FILE" <<< "$__GROUPDB" >/dev/null
